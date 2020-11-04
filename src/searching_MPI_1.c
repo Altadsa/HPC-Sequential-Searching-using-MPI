@@ -11,11 +11,6 @@
 // Program main
 ////////////////////////////////////////////////////////////////////////////////
 
-char *textData;
-int textLength;
-
-char *patternData;
-int patternLength;
 
 void outOfMemory()
 {
@@ -53,7 +48,7 @@ void readFromFile (FILE *f, char **data, int *length)
 	*length = resultLength;
 }
 
-int readText (/*char *textData, int textLength*/)
+int readText (char **textData, int *textLength)
 {
 	FILE *f;
 	char fileName[1000];
@@ -65,7 +60,7 @@ int readText (/*char *textData, int textLength*/)
 	f = fopen (fileName, "r");
 	if (f == NULL)
 		return 0;
-	readFromFile (f, &textData, &textLength);
+	readFromFile (f, textData, textLength);
 	fclose (f);
 
 	return 1;
@@ -73,7 +68,7 @@ int readText (/*char *textData, int textLength*/)
 }
 
 // read pattern in a separate function since we have multiple patterns but only 1 text
-int readPattern(int patternNumber)
+int readPattern(int patternNumber, char **patternData, int *patternLength)
 {
     FILE *f;
     char fileName[1000];
@@ -85,13 +80,13 @@ int readPattern(int patternNumber)
     f = fopen (fileName, "r");
     if (f == NULL)
         return 0;
-    readFromFile (f, &patternData, &patternLength);
+    readFromFile (f, patternData, patternLength);
     fclose (f);
 
     printf ("Read pattern number %d\n", patternNumber);
 }
 
-int hostMatch(long *comparisons)
+int hostMatch(long *comparisons, char *textData, int textLength, char *patternData, int patternLength)
 {
 	int i,j,k, lastI;
 
@@ -125,17 +120,30 @@ int hostMatch(long *comparisons)
 		return -1;
 }
 
-void processData()
+int processData(int procId, int startIndex, char* textData, int textLength, char* patternData, int patternLength)
 {
-	unsigned int result;
+    int result;
     long comparisons;
+    result = hostMatch(&comparisons, textData, textLength, patternData, patternLength);
 
-    result = hostMatch(&comparisons);
+    //printf("PID %i: # comparisons = %ld\n", procId, comparisons);
     if (result == -1)
-        printf ("Pattern not found\n");
+    {
+        printf("PID %i: Pattern not found, return %i\n", procId, result);
+        return result;
+    }
     else
-        printf ("Pattern found at position %d\n", result);
-    printf ("# comparisons = %ld\n", comparisons);
+    {
+        printf("PID %i: Pattern found at position %d\n", procId, result);
+
+        // we add the start index to get the actual position in the whole text
+        result += startIndex;
+        
+        return result;
+    }
+    
+
+    
 
 }
 
@@ -146,29 +154,10 @@ long getNanos(void)
     return (long)ts.tv_sec * 1000000000L + ts.tv_nsec;
 }
 
-void runTest(int pid, int patternNumber)
-{
-
-    // time the entire program
-    long timeStart, timeEnd;
-    long elapsedNsec;
-    timeStart = getNanos();
-
-    processData();
-
-    timeEnd = getNanos();
-
-    elapsedNsec = (timeEnd - timeStart);
-    printf("\nPID %i: Search pattern %i elapsed wall clock time = %ld\n", pid, patternNumber, (long)(elapsedNsec / 1.0e9));
-    printf("PID %i: Search pattern %i elapsed CPU time = %.09f\n\n", pid, patternNumber, (double)elapsedNsec / 1.0e9);
-
-}
-
-
 void divideWorkload(int *procWork, int nProc, int textLength)
 {
     int nElements = textLength / nProc;
-    printf("\nnElements = %i\n", nElements);
+    //printf("\nnElements = %i\n", nElements);
     int i;
     for (i = 0; i < nProc; i++)
     {
@@ -176,7 +165,7 @@ void divideWorkload(int *procWork, int nProc, int textLength)
     }
 
     int remainder = textLength % nProc;
-    printf("\nRemainder = %i\n", remainder);
+    //printf("\nRemainder = %i\n", remainder);
 
     // assign remainders to slave processes
     // hence why we work backwards through processes
@@ -201,13 +190,190 @@ void debugPrintWorkload(int *procWorkload, int nProc)
     }
 }
 
-void processMaster()
+char* textData;
+int textLength;
+
+char* patternData;
+int patternLength;
+
+void processMaster(int result, int nProc, char *textData, int textLength, char *patternData, int patternLength)
 {
+    // should load the text data for this process only
+    readText(&textData, &textLength);
+
+    // store number of elements each process receives
+    int* procWorkload = (int*)malloc(nProc * sizeof(int));
+    int* results;
+
+    // print to confirm
+    //printf("\nDividing text of length %i among %i processes.\n", textLength, nProc);
+
+    // divide the workload among the processes
+    divideWorkload(procWorkload, nProc, textLength);
+    //debugPrintWorkload(procWorkload, nProc);
+
+    int i, nElements, startIndex;
+    int patternNumber = 1;
+
+    // divide text and send to slave processes
+    for (i = 1; i < nProc; i++)
+    {
+        // get number of elements to search
+
+        nElements = (*(procWorkload + i));
+        MPI_Send(&nElements,
+            1, MPI_INT, i, 0,
+            MPI_COMM_WORLD);
+
+        startIndex = nElements * i;
+
+        // send part of text data
+
+        MPI_Send(&startIndex,
+            1, MPI_INT, i, 0,
+            MPI_COMM_WORLD);
+
+        MPI_Send(&textData[startIndex],
+            nElements, MPI_CHAR, i, 0,
+            MPI_COMM_WORLD);
+    }
+
+    int finished = 0;
+    int activeThreads;
+    while (readPattern(patternNumber, &patternData, &patternLength))
+    {
+        printf("\nPattern Length = %i\n", patternLength);
+
+        MPI_Bcast(&finished, 
+            1, MPI_INT, 0, 
+            MPI_COMM_WORLD);
+
+        // divide text and send to slave processes
+        for (i = 1; i < nProc; i++)
+        {
+            activeThreads++;
+
+            // send pattern data
+
+            MPI_Send(&patternLength,
+                1, MPI_INT, i, 0,
+                MPI_COMM_WORLD);
+
+            MPI_Send(patternData,
+                patternLength, MPI_CHAR, i, 0,
+                MPI_COMM_WORLD);
+
+        }
+
+        // perform pattern search for this process
+        nElements = (*(procWorkload + 0));
+        result = processData(0, 0, textData, nElements, patternData, patternLength);
+
+        //results = (int*)malloc((nProc-1)*sizeof(int));
+
+        //int r;
+        //while (activeThreads > 0)
+        //{
+
+        //    MPI_Recv(&r,
+        //        1, MPI_UNSIGNED,
+        //        MPI_ANY_SOURCE, 0,
+        //        MPI_COMM_WORLD,
+        //        MPI_STATUS_IGNORE);
+
+        //    printf("Received value of %i\n", r);
+        //    //results[(nProc - 1) - activeThreads] = r;
+        //    if (r != 0)
+        //        activeThreads--;
+
+        //}
+
+        int finalResult;
+        MPI_Reduce(&result, &finalResult, 
+            1, MPI_INT, MPI_MAX, 0, 
+            MPI_COMM_WORLD);
+
+        //results = (int*)malloc(nProc * sizeof(int));
+
+        //MPI_Gather(&result, 1, MPI_INT, &results, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        //for (i = 0; i < nProc; i++)
+        //{
+        //    if (results[i] > result)
+        //    {
+        //        result = results[i];
+        //    }
+        //}
+
+        printf("\nPattern %i: Pattern found at position %i\n\n", patternNumber, finalResult);
+
+        patternNumber++;
+        //free(results);
+    }
+
+    finished = 1;
+    MPI_Bcast(&finished,
+        1, MPI_INT, 0,
+        MPI_COMM_WORLD);
 
 }
 
-void processSlave()
+void processSlave(int procId, int result, char* textData, int textLength, char* patternData, int patternLength)
 {
+    // receive the text data
+    MPI_Recv(&textLength,
+        1, MPI_INT, 0, 0,
+        MPI_COMM_WORLD,
+        MPI_STATUS_IGNORE);
+
+    int startIndex;
+    MPI_Recv(&startIndex,
+        1, MPI_INT, 0, 0,
+        MPI_COMM_WORLD,
+        MPI_STATUS_IGNORE);
+
+    textData = (char*)malloc(textLength * sizeof(char));
+    MPI_Recv(textData,
+        textLength, MPI_CHAR, 0, 0,
+        MPI_COMM_WORLD,
+        MPI_STATUS_IGNORE);
+
+    int finished = 0;
+
+    printf("\nPID %i received text data, searching from index %i for %i elements.\n", procId, startIndex, textLength);
+
+    while (!finished)
+    {
+        MPI_Bcast(&finished,
+            1, MPI_INT, 0,
+            MPI_COMM_WORLD);
+
+        if (!finished)
+        {
+            MPI_Recv(&patternLength,
+                1, MPI_INT, 0, 0,
+                MPI_COMM_WORLD,
+                MPI_STATUS_IGNORE);
+
+            patternData = (char*)malloc(patternLength * sizeof(char));
+            MPI_Recv(patternData,
+                patternLength, MPI_CHAR, 0, 0,
+                MPI_COMM_WORLD,
+                MPI_STATUS_IGNORE);
+
+            result = processData(procId, startIndex, textData, textLength, patternData, patternLength);
+
+            MPI_Reduce(&result, NULL, 
+                1, MPI_INT, MPI_MAX, 0,
+                MPI_COMM_WORLD);
+
+            //MPI_Send(&result,
+            //    1, MPI_UNSIGNED, 0, 0,
+            //    MPI_COMM_WORLD);
+        }
+
+    }
+
+
 
 }
 
@@ -221,6 +387,12 @@ int main(int argc, char **argv)
 
     unsigned int result;
     long comparisons;
+
+    char* textData;
+    int textLength;
+
+    char* patternData;
+    int patternLength;
 
     MPI_Status status;
 
@@ -238,195 +410,12 @@ int main(int argc, char **argv)
 
     if (procId == 0) // master process
     {
-        // should load the text data for this process only
-        readText();
-
-        // store number of elements each process receives
-        int *procWorkload = (int*)malloc(nProc*sizeof(int));
-
-        // print to confirm
-        printf("\nDividing text of length %i among %i processes.\n", textLength, nProc);
-
-        // divide the workload among the processes
-        divideWorkload(procWorkload, nProc, textLength);
-        debugPrintWorkload(procWorkload, nProc);
-
-        
-
-        printf("\nPID %i: Text Length = %i\n", procId, textLength);
-        long programTime = getNanos();
-        char* masterTextData;
-        int nElements;
-        int startIndex;
-        int i;
-        int patternNumber = 1;
-
-        //readPattern(patternNumber);
-
-        // divide text and send to slave processes
-        for (i = 1; i < nProc; i++)
-        {
-            // get number of elements to search
-
-            nElements = (*(procWorkload + i));
-            MPI_Send(&nElements,
-                1, MPI_INT, i, 0,
-                MPI_COMM_WORLD);
-
-            startIndex = nElements * i;
-
-            // send part of text data
-
-            MPI_Send(&startIndex,
-                1, MPI_INT, i, 0,
-                MPI_COMM_WORLD);
-
-            MPI_Send(&textData[startIndex],
-                nElements, MPI_CHAR, i, 0,
-                MPI_COMM_WORLD);
-        }
-
-        while (readPattern(patternNumber))
-        {
-
-            int activeThreads = 0;
-
-            // divide text and send to slave processes
-            for (i = 1; i < nProc; i++)
-            {
-                activeThreads++;
-
-                // send pattern data
-
-                MPI_Send(&patternLength,
-                    1, MPI_INT, i, 0,
-                    MPI_COMM_WORLD);
-
-                MPI_Send(patternData,
-                    patternLength, MPI_CHAR, i, 0,
-                    MPI_COMM_WORLD);
-
-            }
-
-
-            printf("PID %i: searching %i elements\n", procId, (*(procWorkload + procId)));
-            textLength = (*(procWorkload + procId));
-            //memcpy(textData, masterTextData, (*(procWorkload + i)) * sizeof(char));
-
-            result = hostMatch(&comparisons);
-            if (result == -1)
-                printf("Pattern not found\n");
-            else
-                printf("PID %i: Pattern found at position %d\n", procId, result);
-            printf("PID %i: # comparisons = %ld\n", procId, comparisons);
-
-            printf("\nEnter while\n");
-            int r;
-            while (activeThreads > 0)
-            {
-
-                MPI_Recv(&r,
-                    1, MPI_UNSIGNED,
-                    MPI_ANY_SOURCE, 0,
-                    MPI_COMM_WORLD,
-                    &status);
-
-                printf("Received value of %i\n", r);
-
-                if (r != 0)
-                    activeThreads--;
-
-                //MPI_Recv(&comparisons,
-                //    1, MPI_LONG,
-                //    OMP_ANY_SOURCE, 0,
-                //    MPI_COMM_WORLD,
-                //    &status);
-
-                
-
-            }
-
-            printf("\nExit while\n");
-            programTime = getNanos() - programTime;
-
-            //unsigned int finalResult;
-            //MPI_Reduce(&result, &finalResult, 1, MPI_UNSIGNED, MPI_MAX, 0, MPI_COMM_WORLD);
-
-            //long maxComparisons;
-            //MPI_Reduce(&comparisons, &maxComparisons, 1, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-
-            //if (result == -1)
-            //    printf("\nPattern not found\n");
-            //else
-            //    printf("\nPattern found at position %d\n", result);
-
-
-            //printf("\nPattern %i: # comparisons = %ld\n", patternNumber, comparisons);
-
-            //patternNumber++;
-        }
-
-
+        processMaster(result, nProc, textData, textLength, patternData, patternLength);
     }
     else // slave processes
     {
-
-        MPI_Recv(&textLength,
-            1, MPI_INT, 0, 0,
-            MPI_COMM_WORLD,
-            &status);
-
-        int startIndex;
-        MPI_Recv(&startIndex,
-            1, MPI_INT, 0, 0,
-            MPI_COMM_WORLD,
-            &status);
-
-        textData = (char*)malloc(textLength * sizeof(char));
-        MPI_Recv(textData,
-            textLength, MPI_CHAR, 0, 0,
-            MPI_COMM_WORLD,
-            &status);
-
-
-
-        MPI_Recv(&patternLength,
-            1, MPI_INT, 0, 0,
-            MPI_COMM_WORLD,
-            &status);
-
-        patternData = (char*)malloc(patternLength * sizeof(char));
-        MPI_Recv(patternData,
-            patternLength, MPI_CHAR, 0, 0,
-            MPI_COMM_WORLD,
-            &status);
-
-        printf("\nPID %i: Searching %i elements, Pattern Length = %i\n", procId, textLength, patternLength);
-
-        
-
-        result = hostMatch(&comparisons);
-        if (result == -1)
-            printf("Pattern not found\n");
-        else
-            printf("PID %i: Pattern found at position %d\n", procId, (startIndex+result));
-        printf("PID %i: # comparisons = %ld\n", procId, comparisons);
-
-        MPI_Send(&result,
-            1, MPI_UNSIGNED, 0, 0,
-            MPI_COMM_WORLD);
-
-
-        printf("\nSent result to master.\n");
-
-        //MPI_Send(&comparisons,
-        //    1, MPI_LONG, 0, 0,
-        //    MPI_COMM_WORLD);
-
+        processSlave(procId, result, textData, textLength, patternData, patternLength);
     }
-
-
-    printf("\n\nFinished");
 
     MPI_Finalize();
 
