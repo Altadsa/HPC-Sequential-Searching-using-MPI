@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include <mpi.h>
 
+#define MASTER 0
+
 ////////////////////////////////////////////////////////////////////////////////
 // Program main
 ////////////////////////////////////////////////////////////////////////////////
@@ -134,30 +136,23 @@ int processData(int procId, int startIndex, char* textData, int textLength, char
     }
     else
     {
-        printf("PID %i: Pattern found at position %d\n", procId, result);
+
+        printf("PID %i: Pattern found at position %d, global position %i\n", procId, result, (result+startIndex));
 
         // we add the start index to get the actual position in the whole text
         result += startIndex;
         
         return result;
     }
-    
-
-    
-
-}
-
-long getNanos(void)
-{
-    struct timespec ts;
-    timespec_get(&ts, TIME_UTC);
-    return (long)ts.tv_sec * 1000000000L + ts.tv_nsec;
 }
 
 void divideWorkload(int *procWork, int nProc, int textLength)
 {
+    // calculate the base number of elements for each process
     int nElements = textLength / nProc;
-    //printf("\nnElements = %i\n", nElements);
+    //printf("\nnElements = %i\n", nElements); // confirm base elements 
+
+    // set base number of elements for each process i
     int i;
     for (i = 0; i < nProc; i++)
     {
@@ -165,22 +160,29 @@ void divideWorkload(int *procWork, int nProc, int textLength)
     }
 
     int remainder = textLength % nProc;
-    //printf("\nRemainder = %i\n", remainder);
+    //printf("\nRemainder = %i\n", remainder); // confirm remainder
 
-    // assign remainders to slave processes
-    // hence why we work backwards through processes
+    // if there are no remainders, we can continue with the program
     if (remainder == 0)
     {
         return;
     }
 
+    // assign remainders to slave processes
+    // we work backwards through processes such that only slave processes
+    // take on any extra workload
     for (i = (nProc-1); i > ((nProc-1)-remainder); i--)
     {
         (*(procWork + i)) += 1;
     }
-
 }
 
+/// <summary>
+/// Prints out the number of elements to be received by each process. 
+/// For Debugging purposes only.
+/// </summary>
+/// <param name="procWorkload">Pointer to array containing the workloads for each elements.</param>
+/// <param name="nProc">The number of processes used in the program.</param>
 void debugPrintWorkload(int *procWorkload, int nProc)
 {
     int i;
@@ -190,12 +192,16 @@ void debugPrintWorkload(int *procWorkload, int nProc)
     }
 }
 
-char* textData;
-int textLength;
-
-char* patternData;
-int patternLength;
-
+/// <summary>
+/// Carries out master section of program, such as reading text and assignment of text sub-array, division of elements
+/// and calculation of final result (by reduction).
+/// </summary>
+/// <param name="result">The result to be assigned by hostMatch, and reduced upon completion of all process searches.</param>
+/// <param name="nProc">The number of processes for this program.</param>
+/// <param name="textData">Pointer to array of text data</param>
+/// <param name="textLength"></param>
+/// <param name="patternData"></param>
+/// <param name="patternLength"></param>
 void processMaster(int result, int nProc, char *textData, int textLength, char *patternData, int patternLength)
 {
     // should load the text data for this process only
@@ -212,164 +218,161 @@ void processMaster(int result, int nProc, char *textData, int textLength, char *
     divideWorkload(procWorkload, nProc, textLength);
     //debugPrintWorkload(procWorkload, nProc);
 
-    int i, nElements, startIndex;
+    int i, nElements; // iterable, search elements per process
     int patternNumber = 1;
+    int startIndex = 0; // actual start index of text for process
 
     // divide text and send to slave processes
+    // since there is only 1 text for this assignment, this data only needs
+    // to be sent once
     for (i = 1; i < nProc; i++)
     {
-        // get number of elements to search
 
+        // send number of search elements first
+        // so slaves know how large the subsequent text array will be
         nElements = (*(procWorkload + i));
         MPI_Send(&nElements,
             1, MPI_INT, i, 0,
             MPI_COMM_WORLD);
 
-        startIndex = nElements * i;
+        // we add the elements iteratively rather than nElements * i
+        // since we might have different sizes of nElements from remainders
+        startIndex += nElements;
 
-        // send part of text data
-
+        // send start index, which is used to report actual result of hostMatch
         MPI_Send(&startIndex,
             1, MPI_INT, i, 0,
             MPI_COMM_WORLD);
 
+        // send text data beginning from startIndex, for nElements
         MPI_Send(&textData[startIndex],
             nElements, MPI_CHAR, i, 0,
             MPI_COMM_WORLD);
+
     }
 
+    // flag used to tell slave processes to stop 
     int finished = 0;
-    int activeThreads;
+
+    // stores reduced result value
+    int finalResult;
     while (readPattern(patternNumber, &patternData, &patternLength))
     {
-        printf("\nPattern Length = %i\n", patternLength);
+
+        //printf("\nPattern %i of Length = %i\n", patternNumber,patternLength); // confirm pattern length
+
+        // broadcast the finished flag before pattern data
+        // this ensures we avoid deadlock when we are actually finished
+        // since it is received before pattern data
 
         MPI_Bcast(&finished, 
-            1, MPI_INT, 0, 
+            1, MPI_INT, MASTER,
             MPI_COMM_WORLD);
 
-        // divide text and send to slave processes
-        for (i = 1; i < nProc; i++)
-        {
-            activeThreads++;
+        // we can broadcast pattern data since each process is receiving the same values
 
-            // send pattern data
+        // send pattern length first so slaves know
+        // how large the received pattern is
+        MPI_Bcast(&patternLength,
+            1, MPI_INT, MASTER,
+            MPI_COMM_WORLD);
 
-            MPI_Send(&patternLength,
-                1, MPI_INT, i, 0,
-                MPI_COMM_WORLD);
+        // send entire pattern to slaves
+        MPI_Bcast(patternData,
+            patternLength, MPI_CHAR, MASTER,
+            MPI_COMM_WORLD);
 
-            MPI_Send(patternData,
-                patternLength, MPI_CHAR, i, 0,
-                MPI_COMM_WORLD);
-
-        }
-
-        // perform pattern search for this process
+        // pattern search for the master process
         nElements = (*(procWorkload + 0));
         result = processData(0, 0, textData, nElements, patternData, patternLength);
 
-        //results = (int*)malloc((nProc-1)*sizeof(int));
+        // get final result by reducing result into the master with a max operation
+        // this assumes at most one pattern occurrence in the text
 
-        //int r;
-        //while (activeThreads > 0)
-        //{
-
-        //    MPI_Recv(&r,
-        //        1, MPI_UNSIGNED,
-        //        MPI_ANY_SOURCE, 0,
-        //        MPI_COMM_WORLD,
-        //        MPI_STATUS_IGNORE);
-
-        //    printf("Received value of %i\n", r);
-        //    //results[(nProc - 1) - activeThreads] = r;
-        //    if (r != 0)
-        //        activeThreads--;
-
-        //}
-
-        int finalResult;
         MPI_Reduce(&result, &finalResult, 
-            1, MPI_INT, MPI_MAX, 0, 
+            1, MPI_INT, MPI_MAX, MASTER,
             MPI_COMM_WORLD);
 
-        //results = (int*)malloc(nProc * sizeof(int));
-
-        //MPI_Gather(&result, 1, MPI_INT, &results, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        //for (i = 0; i < nProc; i++)
-        //{
-        //    if (results[i] > result)
-        //    {
-        //        result = results[i];
-        //    }
-        //}
-
+        // print final result and move onto next pattern if possible
         printf("\nPattern %i: Pattern found at position %i\n\n", patternNumber, finalResult);
 
         patternNumber++;
-        //free(results);
     }
+
+    // set finished to true and broadcast to slaves
+    // this way they receive the finsh flag and exit their loop
+    // before trying to receive the pattern data
 
     finished = 1;
     MPI_Bcast(&finished,
-        1, MPI_INT, 0,
+        1, MPI_INT, MASTER,
         MPI_COMM_WORLD);
 
 }
 
 void processSlave(int procId, int result, char* textData, int textLength, char* patternData, int patternLength)
 {
-    // receive the text data
+    // receive the text length before the data
     MPI_Recv(&textLength,
-        1, MPI_INT, 0, 0,
+        1, MPI_INT, MASTER, 0,
         MPI_COMM_WORLD,
         MPI_STATUS_IGNORE);
 
+    // receive global start index in text for calculating real result
     int startIndex;
     MPI_Recv(&startIndex,
-        1, MPI_INT, 0, 0,
+        1, MPI_INT, MASTER, 0,
         MPI_COMM_WORLD,
         MPI_STATUS_IGNORE);
 
+    // receive text data after getting the number of received elements
     textData = (char*)malloc(textLength * sizeof(char));
     MPI_Recv(textData,
-        textLength, MPI_CHAR, 0, 0,
+        textLength, MPI_CHAR, MASTER, 0,
         MPI_COMM_WORLD,
         MPI_STATUS_IGNORE);
 
+    // finished flag to be received from master
     int finished = 0;
 
+    // confirm data received ok
     printf("\nPID %i received text data, searching from index %i for %i elements.\n", procId, startIndex, textLength);
 
+    // loop until told to finish by master
     while (!finished)
     {
+
+        // receive finish flag before trying to receive pattern data
         MPI_Bcast(&finished,
             1, MPI_INT, 0,
             MPI_COMM_WORLD);
 
-        if (!finished)
+        // if master tells slave to finish, return from function and do not try to receive pattern data
+        if (finished)
         {
-            MPI_Recv(&patternLength,
-                1, MPI_INT, 0, 0,
-                MPI_COMM_WORLD,
-                MPI_STATUS_IGNORE);
-
-            patternData = (char*)malloc(patternLength * sizeof(char));
-            MPI_Recv(patternData,
-                patternLength, MPI_CHAR, 0, 0,
-                MPI_COMM_WORLD,
-                MPI_STATUS_IGNORE);
-
-            result = processData(procId, startIndex, textData, textLength, patternData, patternLength);
-
-            MPI_Reduce(&result, NULL, 
-                1, MPI_INT, MPI_MAX, 0,
-                MPI_COMM_WORLD);
-
-            //MPI_Send(&result,
-            //    1, MPI_UNSIGNED, 0, 0,
-            //    MPI_COMM_WORLD);
+            return;
         }
+
+        // receive pattern length before pattern data
+        MPI_Bcast(&patternLength,
+            1, MPI_INT, MASTER,
+            MPI_COMM_WORLD);
+
+        // allocate memory for pattern data
+        patternData = (char*)malloc(patternLength * sizeof(char));
+
+        // receive pattern data after getting the number of received elements
+        MPI_Bcast(patternData,
+            patternLength, MPI_CHAR, MASTER,
+            MPI_COMM_WORLD);
+
+        // pattern search for slave process
+        result = processData(procId, startIndex, textData, textLength, patternData, patternLength);
+
+        // reduce the result to the master process
+        MPI_Reduce(&result, NULL,
+            1, MPI_INT, MPI_MAX, MASTER,
+            MPI_COMM_WORLD);
 
     }
 
@@ -382,19 +385,17 @@ int main(int argc, char **argv)
     
     // number of processes and process id
     int nProc, procId;
-    // elapsed program time
-    long time, maxtime;
 
+    // result of the search
     unsigned int result;
-    long comparisons;
 
+
+    // text and pattern dats
     char* textData;
     int textLength;
 
     char* patternData;
     int patternLength;
-
-    MPI_Status status;
 
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &nProc);
@@ -408,7 +409,7 @@ int main(int argc, char **argv)
         exit(0);
     }
 
-    if (procId == 0) // master process
+    if (procId == MASTER) // master process
     {
         processMaster(result, nProc, textData, textLength, patternData, patternLength);
     }
