@@ -149,7 +149,7 @@ long getNanos(void)
 void runTest(int pid, int patternNumber)
 {
 
-    // time the entire program
+    // time the search
     long timeStart, timeEnd;
     long elapsedNsec;
     timeStart = getNanos();
@@ -167,19 +167,14 @@ void runTest(int pid, int patternNumber)
 
 int main(int argc, char **argv)
 {
-    /*
-     * nProc - number of processes
-     * procId - process Id
-     * time - elapsed program time for a process
-     * maxtime - longest program time reduced from process times
-     */
+    // number of processes and process id
     int nProc, procId;
-    long time, maxtime;
 
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &nProc);
     MPI_Comm_rank(MPI_COMM_WORLD, &procId);
 
+    // read text once since there is only 1 sample
     readText();
 
     // throw error if less than 2 processes
@@ -197,32 +192,20 @@ int main(int argc, char **argv)
         printf ("Text length = %d\n\n", textLength);
     }
 
-    MPI_Barrier(MPI_COMM_WORLD);
-    time = getNanos();
-
-
+    //start tests from 1 up
     int testNumber = procId+1;
 
     while (readPattern(testNumber))
     {
         runTest(procId, testNumber);
+
+        // add number of processes to get next pattern to search for
         testNumber += nProc;
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    time = getNanos() - time;
-
-    // call reduce to get the maximum elapsed time out of all processes
-    // then take this value to be elapsed program time
-    MPI_Reduce(&time, &maxtime, 1, MPI_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
-
-    // use master to get longest process time
-    if (procId == 0)
-    {
-        printf("\nElapsed Program time using %i processes = %.09f\n\n", nProc, (double)maxtime / 1.0e9);
     }
 
     MPI_Finalize();
 
+    free(textData);
+    free(patternData);
 
 }
