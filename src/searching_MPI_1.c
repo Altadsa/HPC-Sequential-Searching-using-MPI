@@ -122,6 +122,24 @@ int hostMatch(long *comparisons, char *textData, int textLength, char *patternDa
 		return -1;
 }
 
+// calculate current time in nanoseconds
+long getNanos(void)
+{
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (long)ts.tv_sec * 1000000000L + ts.tv_nsec;
+}
+
+/// <summary>
+/// Searches for a pattern within a section of text.
+/// </summary>
+/// <param name="procId">Process ID.</param>
+/// <param name="startIndex">The displacement within the full text.</param>
+/// <param name="textData">The partial text data received from the master.</param>
+/// <param name="textLength">The length of the allocated text data.</param>
+/// <param name="patternData">The pattern data received from the master.</param>
+/// <param name="patternLength">The length of the pattern data.</param>
+/// <returns></returns>
 int processData(int procId, int startIndex, char* textData, int textLength, char* patternData, int patternLength)
 {
     int result;
@@ -146,6 +164,12 @@ int processData(int procId, int startIndex, char* textData, int textLength, char
     }
 }
 
+/// <summary>
+/// Distributes text length among processes.
+/// </summary>
+/// <param name="procWork">Array to contain the workload (length of allocated text) of each process.</param>
+/// <param name="nProc">Number of processes in the program.</param>
+/// <param name="textLength">The length of the full text.</param>
 void divideWorkload(int *procWork, int nProc, int textLength)
 {
     // calculate the base number of elements for each process
@@ -177,9 +201,16 @@ void divideWorkload(int *procWork, int nProc, int textLength)
     }
 }
 
+/// <summary>
+/// Sets the displacement in the full text for each process.
+/// </summary>
+/// <param name="displs">Array to contain the displacement of each process.</param>
+/// <param name="procWork">Array containing the workload of each process.</param>
+/// <param name="nProc">Number of processes in the program.</param>
 void setDisplacement(int* displs, int* procWork, int nProc)
 {
     int i;
+    // displacement at i dependent on i-1. We can set displs[0] to 0 since we know it starts there
     displs[0] = 0;
     for (i = 1; i < nProc; i++)
     {
@@ -270,10 +301,15 @@ void processMaster(int result, int nProc)
     // flag used to tell slave processes to stop 
     int finished = 0;
 
+    // Used to time program
+    long searchTime;
+
     // stores reduced result value
     int finalResult;
     while (readPattern(patternNumber, &patternData, &patternLength))
     {
+
+        searchTime = getNanos();
 
         //printf("\nPattern %i of Length = %i\n", patternNumber,patternLength); // confirm pattern length
 
@@ -308,11 +344,20 @@ void processMaster(int result, int nProc)
             1, MPI_INT, MPI_MAX, MASTER,
             MPI_COMM_WORLD);
 
-        // print final result and move onto next pattern if possible
+        searchTime = getNanos() - searchTime;
+
+        // print final result
         printf("\nPattern %i: Pattern found at position %i\n\n", patternNumber, finalResult);
 
+        // print elapsed search time
+        printf("\nPattern %i elapsed wall clock time = %ld\n", patternNumber, (long)(searchTime / 1.0e9));
+        printf("Pattern %i search elapsed CPU time = %.09f\n\n", patternNumber, (double)searchTime / 1.0e9);
+
+
+        // free allocated pattern memory
         free(patternData);
 
+        // move to next pattern (if possible)
         patternNumber++;
     }
 
@@ -325,7 +370,7 @@ void processMaster(int result, int nProc)
         1, MPI_INT, MASTER,
         MPI_COMM_WORLD);
 
-
+    // free text memory
     free(textData);
 }
 
@@ -403,10 +448,12 @@ void processSlave(int procId, int result)
             1, MPI_INT, MPI_MAX, MASTER,
             MPI_COMM_WORLD);
 
+        // free allocated pattern memory
         free(patternData);
 
     }
 
+    // free allocated text memory
     free(textData);
 
 }

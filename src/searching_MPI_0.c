@@ -53,6 +53,7 @@ void readFromFile (FILE *f, char **data, int *length)
 	*length = resultLength;
 }
 
+// only 1 text to test
 int readText ()
 {
 	FILE *f;
@@ -152,12 +153,13 @@ void runTest(int pid, int patternNumber)
     // time the search
     long timeStart, timeEnd;
     long elapsedNsec;
+
+    // perform search
     timeStart = getNanos();
-
     processData();
-
     timeEnd = getNanos();
 
+    // calculate elapsed time
     elapsedNsec = (timeEnd - timeStart);
     printf("\nPID %i: Search pattern %i elapsed wall clock time = %ld\n", pid, patternNumber, (long)(elapsedNsec / 1.0e9));
     printf("PID %i: Search pattern %i elapsed CPU time = %.09f\n\n", pid, patternNumber, (double)elapsedNsec / 1.0e9);
@@ -170,6 +172,7 @@ int main(int argc, char **argv)
     // number of processes and process id
     int nProc, procId;
 
+    // initialize MPI
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &nProc);
     MPI_Comm_rank(MPI_COMM_WORLD, &procId);
@@ -203,8 +206,10 @@ int main(int argc, char **argv)
         testNumber += nProc;
     }
 
+    // finish up MPI
     MPI_Finalize();
 
+    // free allocated array memory
     free(textData);
     free(patternData);
 

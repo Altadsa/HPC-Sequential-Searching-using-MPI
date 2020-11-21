@@ -139,6 +139,7 @@ void processData()
 
 }
 
+// calculate current time in nanoseconds
 long getNanos(void)
 {
     struct timespec ts;
@@ -164,19 +165,23 @@ void runTest()
     int patternNumber = 1;
     int numPatterns = 8;
 
+	// time program start
     timeStart = getNanos();
 
     for (patternNumber; patternNumber <= numPatterns; patternNumber++)
     {
+		// read current pattern
         readPattern(patternNumber);
 
         printf ("\nPattern %i\n", patternNumber);
         printf ("Pattern length = %d\n", patternLength);
 
+		// perform search
         patternStart = getNanos();
         processData();
         patternEnd = getNanos();
 
+		// calculate elapsed time for this pattern search
         elapsedNsec = (patternEnd - patternStart);
 
         printf("\nPattern %i elapsed wall clock time = %ld\n", patternNumber, (long)(elapsedNsec / 1.0e9));
@@ -185,6 +190,7 @@ void runTest()
 
     timeEnd = getNanos();
 
+	// calculate total elapsed time for program
     elapsedNsec = (timeEnd - timeStart);
     printf("\n8 Pattern search elapsed wall clock time = %ld\n", (long)(elapsedNsec / 1.0e9));
     printf("8 Pattern search elapsed CPU time = %.09f\n\n", (double)elapsedNsec / 1.0e9);
@@ -194,5 +200,6 @@ void runTest()
 
 int main()
 {
+	// run test function carried over from program at the end of assignment 1
     runTest();
 }
